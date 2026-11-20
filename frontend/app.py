@@ -1,51 +1,44 @@
 # Users can record their voice, transcribe it, extract action items, save notes, search using AI and download notes.
 
 import os
-import socket
-import threading
+import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 import requests
 import streamlit as st
-import uvicorn
 from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
 
-# Load local .env file first
+# Ensure project root is in python path
 BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+# 1. Load Environment Variables from local .env
 load_dotenv(BASE_DIR / ".env")
 
-# 1. Populate environment variables from Streamlit Cloud Secrets (if deployed)
+# 2. Populate from Streamlit Secrets (if deployed on Streamlit Cloud)
 try:
-    if "DEEPGRAM_API_KEY" in st.secrets and not os.getenv("DEEPGRAM_API_KEY"):
-        os.environ["DEEPGRAM_API_KEY"] = st.secrets["DEEPGRAM_API_KEY"]
-    if "DEEPGRAM_MODEL" in st.secrets and not os.getenv("DEEPGRAM_MODEL"):
-        os.environ["DEEPGRAM_MODEL"] = st.secrets["DEEPGRAM_MODEL"]
-    if "GEMINI_API_KEY" in st.secrets and not os.getenv("GEMINI_API_KEY"):
-        os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
-    if "GROQ_API_KEY" in st.secrets and not os.getenv("GROQ_API_KEY"):
-        os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+    if hasattr(st, "secrets"):
+        for secret_k in ["DEEPGRAM_API_KEY", "DEEPGRAM_MODEL", "GEMINI_API_KEY", "GROQ_API_KEY"]:
+            if secret_k in st.secrets and not os.getenv(secret_k):
+                os.environ[secret_k] = str(st.secrets[secret_k])
 except Exception:
     pass
 
-# 2. Check and auto-start FastAPI backend if not already running
-def is_backend_running(host="127.0.0.1", port=8000):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex((host, port)) == 0
+# Direct import of backend services (hybrid architecture)
+from backend.database import init_db, save_note, get_all_notes, delete_note
+from backend.deepgram_service import transcribe_audio
+from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
+from backend.ai_service import analyze_transcript
 
-if not is_backend_running():
-    def start_server():
-        uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, log_level="warning")
-
-    thread = threading.Thread(target=start_server, daemon=True)
-    thread.start()
-    for _ in range(12):
-        if is_backend_running():
-            break
-        time.sleep(0.5)
-
-BACKEND = os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000")
+# Initialize database on startup
+try:
+    init_db()
+except Exception:
+    pass
 
 # 3. Streamlit Page Configuration
 st.set_page_config(
@@ -105,28 +98,6 @@ st.markdown("""
         margin: 0;
     }
     
-    /* Action Items Card */
-    .action-box {
-        background: rgba(99, 102, 241, 0.08);
-        border: 1px solid rgba(99, 102, 241, 0.25);
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 15px;
-    }
-    
-    .action-pill {
-        display: inline-block;
-        background: rgba(16, 185, 129, 0.12);
-        border: 1px solid rgba(16, 185, 129, 0.25);
-        color: #34D399;
-        font-size: 0.8rem;
-        font-weight: 600;
-        padding: 3px 10px;
-        border-radius: 6px;
-        margin-right: 6px;
-        margin-bottom: 6px;
-    }
-    
     /* Semantic search result card */
     .search-card {
         background: rgba(15, 23, 42, 0.6);
@@ -150,16 +121,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 5. Helper function to fetch notes
-def fetch_all_notes():
-    try:
-        res = requests.get(f"{BACKEND}/notes", timeout=30)
-        res.raise_for_status()
-        return res.json()
-    except Exception:
-        return []
-
-all_notes = fetch_all_notes()
+# 5. Fetch all notes
+try:
+    all_notes = get_all_notes()
+except Exception:
+    all_notes = []
 
 # 6. Sidebar Navigation & Info
 with st.sidebar:
@@ -168,6 +134,12 @@ with st.sidebar:
     
     st.divider()
     
+    # Check API Key
+    current_key = os.getenv("DEEPGRAM_API_KEY")
+    if not current_key and "custom_dg_key" in st.session_state:
+        current_key = st.session_state["custom_dg_key"]
+        os.environ["DEEPGRAM_API_KEY"] = current_key
+
     # Live Metrics
     col_m1, col_m2 = st.columns(2)
     with col_m1:
@@ -178,19 +150,26 @@ with st.sidebar:
     
     st.divider()
     
-    # Engine Status
-    backend_ok = is_backend_running()
-    if backend_ok:
-        st.success("🟢 Backend API: Connected", icon="✅")
-    else:
-        st.warning("🟡 Backend API: Starting...", icon="⏳")
-        
-    deepgram_key_ok = bool(os.getenv("DEEPGRAM_API_KEY"))
-    if deepgram_key_ok:
+    # Engine Status (Direct Core Engine)
+    st.success("🟢 AI Core Engine: Ready", icon="✅")
+    
+    # Deepgram Key Status
+    if current_key and len(current_key) > 8:
         st.success("🟢 Deepgram: Ready", icon="🔑")
     else:
         st.error("🔴 Deepgram: Key Missing", icon="⚠️")
-        
+        user_input_key = st.text_input(
+            "Enter Deepgram API Key",
+            type="password",
+            placeholder="Paste your key here...",
+            help="Get a free key at console.deepgram.com"
+        )
+        if user_input_key:
+            os.environ["DEEPGRAM_API_KEY"] = user_input_key.strip()
+            st.session_state["custom_dg_key"] = user_input_key.strip()
+            st.success("Key applied successfully!")
+            st.rerun()
+
     ai_llm_ok = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY"))
     if ai_llm_ok:
         st.success("🟢 LLM Intelligence: Active", icon="🧠")
@@ -200,10 +179,10 @@ with st.sidebar:
     st.divider()
     st.markdown("#### 🚀 Flagship Features")
     st.markdown("""
-    - ⚡ **Deepgram Nova-3**: Sub-second transcription with smart formatting.
-    - 📋 **Action Item Extractor**: Automatically parses tasks, deadlines, and reminders.
-    - 🧠 **ChromaDB Vector Search**: Semantic search by intent & meaning.
-    - 📥 **One-Click Export**: Save to `.txt` anytime.
+    - ⚡ **Deepgram Nova-3**: Sub-second speech recognition.
+    - 📋 **Action Item Extractor**: Automatically parses tasks & to-dos.
+    - 🧠 **ChromaDB Vector Search**: Semantic retrieval by concept & meaning.
+    - 📥 **One-Click Export**: Save to `.txt` with task checklists.
     """)
 
 # 7. Hero Banner
@@ -274,22 +253,28 @@ with tab_record:
             col_t_btn, col_d_btn = st.columns([2, 1])
             with col_t_btn:
                 if st.button("✨ Transcribe & Extract Actions", type="primary", use_container_width=True):
-                    with st.spinner("Transcribing with Deepgram Nova-3 & extracting action items..."):
-                        try:
-                            response = requests.post(
-                                f"{BACKEND}/transcribe",
-                                files={"file": ("recording.wav", audio_payload, audio_mimetype)},
-                                timeout=120
-                            )
-                            response.raise_for_status()
-                            result = response.json()
-                            st.session_state["transcript"] = result.get("transcript", "")
-                            st.session_state["summary"] = result.get("summary", "")
-                            st.session_state["action_items"] = result.get("action_items", [])
-                            st.toast("Transcription & Action Items Ready!", icon="🎉")
-                            st.rerun()
-                        except requests.RequestException as e:
-                            st.error(f"Transcription failed: {e}")
+                    active_key = os.getenv("DEEPGRAM_API_KEY") or st.session_state.get("custom_dg_key")
+                    if not active_key:
+                        st.error("Please provide your Deepgram API Key in the sidebar first.")
+                    else:
+                        with st.spinner("Transcribing with Deepgram Nova-3 & extracting action items..."):
+                            try:
+                                # Direct service execution
+                                res = transcribe_audio(audio_payload, audio_mimetype)
+                                transcript_text = res.get("transcript", "")
+                                dg_summary = res.get("deepgram_summary", "")
+
+                                if not transcript_text:
+                                    st.warning("No speech detected in audio. Please try recording again.")
+                                else:
+                                    analysis = analyze_transcript(transcript_text, dg_summary)
+                                    st.session_state["transcript"] = transcript_text
+                                    st.session_state["summary"] = analysis.get("summary", "")
+                                    st.session_state["action_items"] = analysis.get("action_items", [])
+                                    st.toast("Transcription & Action Items Ready!", icon="🎉")
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Transcription failed: {e}")
             
             with col_d_btn:
                 if st.button("🗑️ Discard", use_container_width=True):
@@ -327,9 +312,7 @@ with tab_record:
                 if st.button("🔄 Re-analyze Actions from Edited Text", help="Extract new action items from your edits"):
                     with st.spinner("Analyzing text..."):
                         try:
-                            a_res = requests.post(f"{BACKEND}/notes/analyze", json={"transcript": edited_text})
-                            a_res.raise_for_status()
-                            a_data = a_res.json()
+                            a_data = analyze_transcript(edited_text)
                             st.session_state["transcript"] = edited_text
                             st.session_state["summary"] = a_data.get("summary", "")
                             st.session_state["action_items"] = a_data.get("action_items", [])
@@ -356,17 +339,26 @@ with tab_record:
             else:
                 with st.spinner("Saving note and indexing vector embeddings..."):
                     try:
-                        resp = requests.post(
-                            f"{BACKEND}/notes",
-                            json={
-                                "title": note_title.strip(),
-                                "transcript": final_text,
-                                "summary": st.session_state["summary"],
-                                "action_items": st.session_state["action_items"]
-                            },
-                            timeout=60
+                        note_id = str(uuid4())
+                        created_at = datetime.now(timezone.utc).isoformat()
+                        
+                        save_note(
+                            note_id,
+                            note_title.strip(),
+                            final_text,
+                            created_at,
+                            summary=st.session_state["summary"],
+                            action_items=st.session_state["action_items"]
                         )
-                        resp.raise_for_status()
+                        
+                        add_note_to_vector_db(
+                            note_id,
+                            note_title.strip(),
+                            final_text,
+                            created_at,
+                            summary=st.session_state["summary"]
+                        )
+                        
                         st.toast(f"Saved '{note_title}' with action items!", icon="✅")
                         st.session_state["transcript"] = ""
                         st.session_state["summary"] = ""
@@ -374,7 +366,7 @@ with tab_record:
                         st.session_state["recorder_key"] += 1
                         time.sleep(0.5)
                         st.rerun()
-                    except requests.RequestException as e:
+                    except Exception as e:
                         st.error(f"Failed to save note: {e}")
 
 # ==========================================================
@@ -397,13 +389,7 @@ with tab_search:
     if search_query.strip() and (search_clicked or search_query):
         with st.spinner("Searching vector index..."):
             try:
-                search_res = requests.get(
-                    f"{BACKEND}/search",
-                    params={"query": search_query.strip()},
-                    timeout=60
-                )
-                search_res.raise_for_status()
-                matches = search_res.json()
+                matches = semantic_search(search_query.strip())
                 
                 if matches:
                     st.success(f"Found {len(matches)} relevant note(s):")
@@ -424,7 +410,7 @@ with tab_search:
                         """, unsafe_allow_html=True)
                 else:
                     st.info("No matching notes found. Try searching with different concept keywords!")
-            except requests.RequestException as e:
+            except Exception as e:
                 st.error(f"Search request failed: {e}")
 
 # ==========================================================
@@ -461,7 +447,6 @@ with tab_library:
                 st.write(note["transcript"])
                 st.caption(f"Note ID: `{note['id']}` • Created at {created_str} UTC")
                 
-                # Download payload includes action items and summary
                 download_text = f"Title: {note['title']}\nDate: {created_str}\n\nSummary:\n{summary}\n\nAction Items:\n" + \
                                 "\n".join([f"- [ ] {x}" for x in items]) + f"\n\nTranscript:\n{note['transcript']}"
                 
@@ -478,9 +463,9 @@ with tab_library:
                 with col_del:
                     if st.button("🗑️ Delete Note", key=f"del_note_{note['id']}", type="secondary", use_container_width=True):
                         try:
-                            del_resp = requests.delete(f"{BACKEND}/notes/{note['id']}", timeout=30)
-                            del_resp.raise_for_status()
+                            delete_note(note['id'])
+                            delete_note_from_vector_db(note['id'])
                             st.toast(f"Deleted '{note['title']}'", icon="🗑️")
                             st.rerun()
-                        except requests.RequestException as e:
+                        except Exception as e:
                             st.error(f"Failed to delete note: {e}")

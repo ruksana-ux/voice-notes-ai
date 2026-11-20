@@ -10,8 +10,12 @@ API_KEY = os.getenv("DEEPGRAM_API_KEY")
 def transcribe_audio(audio_bytes, content_type="audio/wav"):
     url = "https://api.deepgram.com/v1/listen"
 
+    key = os.getenv("DEEPGRAM_API_KEY") or API_KEY
+    if not key:
+        raise ValueError("DEEPGRAM_API_KEY is not configured. Please add it to your .env or Streamlit Secrets.")
+
     headers = {
-        "Authorization": f"Token {API_KEY}",
+        "Authorization": f"Token {key}",
         "Content-Type": content_type
     }
 

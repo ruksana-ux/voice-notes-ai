@@ -1,14 +1,13 @@
-
-import requests
 import os
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 API_KEY = os.getenv("DEEPGRAM_API_KEY")
 
-def transcribe_audio(audio_bytes, content_type="audio/wav"):
 
+def transcribe_audio(audio_bytes, content_type="audio/wav"):
     url = "https://api.deepgram.com/v1/listen"
 
     headers = {
@@ -17,9 +16,9 @@ def transcribe_audio(audio_bytes, content_type="audio/wav"):
     }
 
     params = {
-        "model": "nova-3",
+        "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
         "smart_format": "true",
-        "language": "en"
+        "punctuate": "true",
     }
 
     response = requests.post(
@@ -30,12 +29,18 @@ def transcribe_audio(audio_bytes, content_type="audio/wav"):
     )
 
     response.raise_for_status()
-
     result = response.json()
 
-    transcript = (
-        result["results"]["channels"][0]
-        ["alternatives"][0]["transcript"]
+    channels = result.get("results", {}).get("channels", [{}])
+    alternatives = channels[0].get("alternatives", [{}]) if channels else [{}]
+    transcript = alternatives[0].get("transcript", "").strip()
+
+    summary = (
+        result.get("results", {}).get("summary", {}).get("short", "") or
+        alternatives[0].get("summary", {}).get("short", "")
     )
 
-    return transcript
+    return {
+        "transcript": transcript,
+        "deepgram_summary": summary
+    }

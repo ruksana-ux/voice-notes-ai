@@ -3,34 +3,35 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timezone
 from uuid import uuid4
+from typing import List, Optional
 
 from .database import init_db, save_note, get_all_notes, delete_note
 from .deepgram_service import transcribe_audio
 from .vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
+from .ai_service import analyze_transcript
 from .config import MAX_AUDIO_SIZE
 
 
-app = FastAPI(title="Deepgram AI Voice Notes")
+app = FastAPI(title="Deepgram AI Voice Assistant", version="2.0")
 
 
 @app.on_event("startup")
 def startup():
-
     init_db()
 
 
 @app.get("/")
 def home():
-
     return {
-        "message": "Voice Notes AI Backend is running"
+        "name": "AI Voice Assistant API",
+        "status": "healthy",
+        "features": ["Deepgram Nova-3 Transcription", "ChromaDB Semantic Search", "AI Action Item Extractor"]
     }
 
 
-# 1. Speech-to-Text
+# 1. Speech-to-Text with AI Analysis
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
-
     allowed_types = [
         "audio/wav",
         "audio/x-wav",
@@ -61,11 +62,12 @@ async def transcribe(file: UploadFile = File(...)):
         )
 
     try:
-
-        transcript = transcribe_audio(
+        transcribe_res = transcribe_audio(
             audio_bytes,
             file.content_type
         )
+        transcript = transcribe_res.get("transcript", "")
+        dg_summary = transcribe_res.get("deepgram_summary", "")
 
         if not transcript.strip():
             raise HTTPException(
@@ -73,30 +75,45 @@ async def transcribe(file: UploadFile = File(...)):
                 detail="No speech detected. Please record again."
             )
 
+        # AI Action Item & Summary Extraction
+        analysis = analyze_transcript(transcript, dg_summary)
+
         return {
-            "transcript": transcript
+            "transcript": transcript,
+            "summary": analysis.get("summary", ""),
+            "action_items": analysis.get("action_items", [])
         }
 
     except HTTPException:
         raise
-
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=502,
-            detail="Deepgram transcription failed. Check your API key and connection."
+            detail=f"Transcription failed: {str(e)}"
         )
 
 
-# 2. Save an edited note
-class NoteRequest(BaseModel):
+# 2. Extract action items directly from text
+class AnalyzeRequest(BaseModel):
+    transcript: str
 
+@app.post("/notes/analyze")
+def analyze_text(req: AnalyzeRequest):
+    if not req.transcript.strip():
+        raise HTTPException(status_code=400, detail="Transcript cannot be empty.")
+    return analyze_transcript(req.transcript.strip())
+
+
+# 3. Save note with action items and summary
+class NoteRequest(BaseModel):
     title: str
     transcript: str
+    summary: Optional[str] = ""
+    action_items: Optional[List[str]] = []
 
 
 @app.post("/notes")
 def create_note(note: NoteRequest):
-
     if not note.title.strip() or not note.transcript.strip():
         raise HTTPException(
             status_code=400,
@@ -104,25 +121,24 @@ def create_note(note: NoteRequest):
         )
 
     note_id = str(uuid4())
-
-    created_at = datetime.now(
-        timezone.utc
-    ).isoformat()
+    created_at = datetime.now(timezone.utc).isoformat()
 
     try:
-
         save_note(
             note_id,
             note.title.strip(),
             note.transcript.strip(),
-            created_at
+            created_at,
+            summary=note.summary.strip() if note.summary else "",
+            action_items=note.action_items or []
         )
 
         add_note_to_vector_db(
             note_id,
             note.title.strip(),
             note.transcript.strip(),
-            created_at
+            created_at,
+            summary=note.summary.strip() if note.summary else ""
         )
 
         return {
@@ -130,24 +146,22 @@ def create_note(note: NoteRequest):
             "note_id": note_id
         }
 
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Could not save or index the note."
+            detail=f"Could not save or index note: {str(e)}"
         )
 
 
-# 3. Display saved notes
+# 4. Display saved notes
 @app.get("/notes")
 def list_notes():
-
     return get_all_notes()
 
 
-# 4. AI semantic search
+# 5. AI semantic search
 @app.get("/search")
 def search_voice_notes(query: str):
-
     if not query.strip():
         raise HTTPException(
             status_code=400,
@@ -157,12 +171,10 @@ def search_voice_notes(query: str):
     return semantic_search(query)
 
 
-# 5. Delete a note
+# 6. Delete a note
 @app.delete("/notes/{note_id}")
 def delete_voice_note(note_id: str):
-
     deleted = delete_note(note_id)
-
     if not deleted:
         raise HTTPException(
             status_code=404,
@@ -175,6 +187,3 @@ def delete_voice_note(note_id: str):
         "message": "Note deleted successfully",
         "note_id": note_id
     }
-
-
-

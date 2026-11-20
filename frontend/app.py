@@ -5,10 +5,16 @@ import socket
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 import requests
 import streamlit as st
 import uvicorn
+from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
+
+# Load local .env file first
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 # 1. Populate environment variables from Streamlit Cloud Secrets (if deployed)
 try:
@@ -189,7 +195,7 @@ with st.sidebar:
     if ai_llm_ok:
         st.success("🟢 LLM Intelligence: Active", icon="🧠")
     else:
-        st.info("🔵 NLP Action Extractor: Active", icon="⚙️")
+        st.success("🟢 Action Extractor: Ready (Built-in NLP)", icon="⚡")
         
     st.divider()
     st.markdown("#### 🚀 Flagship Features")

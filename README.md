@@ -10,6 +10,7 @@
 [![Deepgram](https://img.shields.io/badge/Deepgram-Nova--3-13EF93?style=for-the-badge&logo=deepgram&logoColor=black)](https://deepgram.com)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Store-orange?style=for-the-badge)](https://trychroma.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![DOI](https://zenodo.org/badge/1465694084.svg)](https://doi.org/10.5281/zenodo.24442640)
 
 [**🌐 Live Demo**](https://voice-notes-ai.streamlit.app) • [**📖 Architecture**](#-system-architecture) • [**⚡ Features**](#-key-features) • [**🚀 Quickstart**](#-quickstart)
 

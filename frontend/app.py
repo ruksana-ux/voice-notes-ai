@@ -135,10 +135,17 @@ with st.sidebar:
     st.divider()
     
     # Check API Key
-    current_key = os.getenv("DEEPGRAM_API_KEY")
-    if not current_key and "custom_dg_key" in st.session_state:
-        current_key = st.session_state["custom_dg_key"]
+    current_key = os.getenv("DEEPGRAM_API_KEY") or st.session_state.get("custom_dg_key")
+    if current_key:
+        current_key = str(current_key).strip().strip("'\"")
+        if current_key.lower().startswith("token "):
+            current_key = current_key[6:].strip()
+        elif current_key.lower().startswith("bearer "):
+            current_key = current_key[7:].strip()
         os.environ["DEEPGRAM_API_KEY"] = current_key
+
+    is_placeholder = bool(current_key and ("your_" in current_key.lower() or "placeholder" in current_key.lower()))
+    is_valid_format = bool(current_key and len(current_key) > 10 and not is_placeholder)
 
     # Live Metrics
     col_m1, col_m2 = st.columns(2)
@@ -154,19 +161,43 @@ with st.sidebar:
     st.success("🟢 AI Core Engine: Ready", icon="✅")
     
     # Deepgram Key Status
-    if current_key and len(current_key) > 8:
-        st.success("🟢 Deepgram: Ready", icon="🔑")
+    if is_valid_format:
+        masked_key = f"{current_key[:4]}...{current_key[-4:]}"
+        st.success(f"🟢 Deepgram: Ready (`{masked_key}`)", icon="🔑")
+        with st.expander("⚙️ Change / Update API Key"):
+            new_k = st.text_input("New Deepgram Key", type="password", placeholder="Paste your key...", key="update_key_input")
+            if st.button("Apply New Key", key="btn_apply_key"):
+                if new_k.strip():
+                    cleaned_k = new_k.strip().strip("'\"")
+                    if cleaned_k.lower().startswith("token "):
+                        cleaned_k = cleaned_k[6:].strip()
+                    elif cleaned_k.lower().startswith("bearer "):
+                        cleaned_k = cleaned_k[7:].strip()
+                    os.environ["DEEPGRAM_API_KEY"] = cleaned_k
+                    st.session_state["custom_dg_key"] = cleaned_k
+                    st.rerun()
     else:
-        st.error("🔴 Deepgram: Key Missing", icon="⚠️")
+        if is_placeholder:
+            st.error("🔴 Placeholder API Key Detected", icon="⚠️")
+            st.caption("Please paste your real key from console.deepgram.com below:")
+        else:
+            st.error("🔴 Deepgram: Key Missing", icon="⚠️")
+            
         user_input_key = st.text_input(
             "Enter Deepgram API Key",
             type="password",
             placeholder="Paste your key here...",
-            help="Get a free key at console.deepgram.com"
+            help="Get a free key at console.deepgram.com",
+            key="initial_key_input"
         )
         if user_input_key:
-            os.environ["DEEPGRAM_API_KEY"] = user_input_key.strip()
-            st.session_state["custom_dg_key"] = user_input_key.strip()
+            cleaned_k = user_input_key.strip().strip("'\"")
+            if cleaned_k.lower().startswith("token "):
+                cleaned_k = cleaned_k[6:].strip()
+            elif cleaned_k.lower().startswith("bearer "):
+                cleaned_k = cleaned_k[7:].strip()
+            os.environ["DEEPGRAM_API_KEY"] = cleaned_k
+            st.session_state["custom_dg_key"] = cleaned_k
             st.success("Key applied successfully!")
             st.rerun()
 

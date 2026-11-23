@@ -1,5 +1,7 @@
 # importing libraries
 import os
+import sys
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,14 +18,37 @@ DEEPGRAM_MIP_OPT_OUT = (
     os.getenv("DEEPGRAM_MIP_OPT_OUT", "true").lower() == "true"
 )
 
-# Data directories
-DATA_DIR = BASE_DIR / "data"
+# Determine writable data directory safely
+# First try project root 'data' directory
+candidate_data_dir = BASE_DIR / "data"
+DATA_DIR = candidate_data_dir
+
+try:
+    candidate_data_dir.mkdir(parents=True, exist_ok=True)
+    # Test writability by creating and removing a temporary canary file
+    test_file = candidate_data_dir / ".write_canary"
+    test_file.touch()
+    test_file.unlink()
+except Exception:
+    # Fallback to system temp directory (essential for read-only mounts e.g. Streamlit Cloud)
+    DATA_DIR = Path(tempfile.gettempdir()) / "voice_notes_ai_data"
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        DATA_DIR = Path(tempfile.gettempdir())
+
 DATABASE_PATH = DATA_DIR / "voice_notes.db"
 CHROMA_PATH = DATA_DIR / "chroma_db"
 AUDIO_DIR = DATA_DIR / "audio"
 
-# Ensure all persistent directories exist automatically
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    AUDIO_DIR = Path(tempfile.gettempdir()) / "voice_notes_ai_audio"
+    try:
+        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        AUDIO_DIR = Path(tempfile.gettempdir())
 
 MAX_AUDIO_SIZE = 25 * 1024 * 1024
+

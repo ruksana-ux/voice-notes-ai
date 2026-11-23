@@ -2,8 +2,28 @@
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 
-# 1. CRITICAL: IMMEDIATE STREAMLIT SECRETS SYNC BEFORE ANY OTHER IMPORT OR SUBPROCESS
+# 1. ROBUST SYS.PATH RESOLUTION (Streamlit Community Cloud & Local)
+# Automatically ensures project root is at index 0 of sys.path
+_THIS_FILE = Path(__file__).resolve()
+_FRONTEND_DIR = _THIS_FILE.parent
+_ROOT_DIR = _FRONTEND_DIR.parent
+
+for _p in [
+    str(_ROOT_DIR),
+    str(_FRONTEND_DIR),
+    os.path.abspath("."),
+    os.getcwd(),
+    "/mount/src/voice-notes-ai",
+]:
+    if _p and os.path.exists(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+BASE_DIR = _ROOT_DIR
+
+# 2. IMMEDIATE STREAMLIT SECRETS SYNC BEFORE ANY OTHER IMPORT OR SUBPROCESS
 # Copies st.secrets into os.environ so DEEPGRAM_API_KEY never fails with 401 Unauthorized on Streamlit Cloud
 try:
     import streamlit as st
@@ -24,26 +44,35 @@ except Exception:
 
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 import requests
 from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
 
-# Ensure project root is in python path
-BASE_DIR = Path(__file__).resolve().parent.parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
 # Load Environment Variables from local .env (if present)
 load_dotenv(BASE_DIR / ".env")
 
-# Direct import of backend services (hybrid zero-downtime architecture)
-from backend.config import AUDIO_DIR
-from backend.database import init_db, save_note, get_all_notes, delete_note
-from backend.deepgram_service import transcribe_audio
-from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
-from backend.ai_service import analyze_transcript
+# 3. DIRECT IMPORT OF BACKEND SERVICES (With Safe Streamlit Cloud Fallbacks)
+try:
+    from backend.config import AUDIO_DIR
+except Exception:
+    AUDIO_DIR = Path(tempfile.gettempdir()) / "voice_notes_ai_audio"
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+try:
+    from backend.database import init_db, save_note, get_all_notes, delete_note
+    from backend.deepgram_service import transcribe_audio
+    from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
+    from backend.ai_service import analyze_transcript
+except (ImportError, ModuleNotFoundError):
+    # Retry after explicitly injecting ROOT_DIR
+    if str(BASE_DIR) in sys.path:
+        sys.path.remove(str(BASE_DIR))
+    sys.path.insert(0, str(BASE_DIR))
+    from backend.database import init_db, save_note, get_all_notes, delete_note
+    from backend.deepgram_service import transcribe_audio
+    from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
+    from backend.ai_service import analyze_transcript
 
 # Initialize database schema and migrations
 try:

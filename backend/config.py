@@ -20,7 +20,10 @@ DEEPGRAM_MIP_OPT_OUT = (
 DATA_DIR = BASE_DIR / "data"
 DATABASE_PATH = DATA_DIR / "voice_notes.db"
 CHROMA_PATH = DATA_DIR / "chroma_db"
+AUDIO_DIR = DATA_DIR / "audio"
 
-DATA_DIR.mkdir(exist_ok=True)
+# Ensure all persistent directories exist automatically
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_AUDIO_SIZE = 20 * 1024 * 1024
+MAX_AUDIO_SIZE = 25 * 1024 * 1024

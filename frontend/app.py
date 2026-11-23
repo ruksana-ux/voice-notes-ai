@@ -2,12 +2,31 @@
 
 import os
 import sys
+
+# 1. CRITICAL: IMMEDIATE STREAMLIT SECRETS SYNC BEFORE ANY OTHER IMPORT OR SUBPROCESS
+# Copies st.secrets into os.environ so DEEPGRAM_API_KEY never fails with 401 Unauthorized on Streamlit Cloud
+try:
+    import streamlit as st
+    if hasattr(st, "secrets"):
+        for k, v in st.secrets.items():
+            if isinstance(v, (str, int, float, bool)) and not os.getenv(k):
+                os.environ[k] = str(v).strip().strip("'\"")
+        if "DEEPGRAM_API_KEY" in st.secrets:
+            os.environ["DEEPGRAM_API_KEY"] = str(st.secrets["DEEPGRAM_API_KEY"]).strip().strip("'\"")
+        if "DEEPGRAM_MODEL" in st.secrets:
+            os.environ["DEEPGRAM_MODEL"] = str(st.secrets["DEEPGRAM_MODEL"]).strip().strip("'\"")
+        if "GEMINI_API_KEY" in st.secrets:
+            os.environ["GEMINI_API_KEY"] = str(st.secrets["GEMINI_API_KEY"]).strip().strip("'\"")
+        if "GROQ_API_KEY" in st.secrets:
+            os.environ["GROQ_API_KEY"] = str(st.secrets["GROQ_API_KEY"]).strip().strip("'\"")
+except Exception:
+    pass
+
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 import requests
-import streamlit as st
 from dotenv import load_dotenv
 from streamlit_mic_recorder import mic_recorder
 
@@ -16,31 +35,35 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-# 1. Load Environment Variables from local .env
+# Load Environment Variables from local .env (if present)
 load_dotenv(BASE_DIR / ".env")
 
-# 2. Populate from Streamlit Secrets (if deployed on Streamlit Cloud)
-try:
-    if hasattr(st, "secrets"):
-        for secret_k in ["DEEPGRAM_API_KEY", "DEEPGRAM_MODEL", "GEMINI_API_KEY", "GROQ_API_KEY"]:
-            if secret_k in st.secrets and not os.getenv(secret_k):
-                os.environ[secret_k] = str(st.secrets[secret_k])
-except Exception:
-    pass
-
-# Direct import of backend services (hybrid architecture)
+# Direct import of backend services (hybrid zero-downtime architecture)
+from backend.config import AUDIO_DIR
 from backend.database import init_db, save_note, get_all_notes, delete_note
 from backend.deepgram_service import transcribe_audio
 from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
 from backend.ai_service import analyze_transcript
 
-# Initialize database on startup
+# Initialize database schema and migrations
 try:
     init_db()
 except Exception:
     pass
 
-# 3. Streamlit Page Configuration
+
+def format_time(seconds) -> str:
+    """Formats seconds (float/int) into MM:SS format."""
+    try:
+        total_s = int(float(seconds))
+        m = total_s // 60
+        s = total_s % 60
+        return f"{m:02d}:{s:02d}"
+    except Exception:
+        return "00:00"
+
+
+# 2. Streamlit Page Configuration
 st.set_page_config(
     page_title="AI Voice Assistant Studio",
     page_icon="🎙️",
@@ -48,7 +71,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 4. Custom Modern Styling (Glassmorphism & Gradients)
+# 3. Custom Modern Styling (Glassmorphism & Gradients)
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
@@ -62,8 +85,8 @@ st.markdown("""
         background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(168, 85, 247, 0.12) 50%, rgba(236, 72, 153, 0.1) 100%);
         border: 1px solid rgba(99, 102, 241, 0.25);
         border-radius: 20px;
-        padding: 28px 32px;
-        margin-bottom: 24px;
+        padding: 26px 30px;
+        margin-bottom: 22px;
         box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.2);
     }
     
@@ -80,22 +103,31 @@ st.markdown("""
         border-radius: 999px;
         letter-spacing: 0.5px;
         text-transform: uppercase;
-        margin-bottom: 12px;
+        margin-bottom: 10px;
     }
     
     .hero-title {
-        font-size: 2.2rem;
+        font-size: 2.1rem;
         font-weight: 800;
         background: linear-gradient(135deg, #FFFFFF 30%, #A5B4FC 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin: 0 0 8px 0;
+        margin: 0 0 6px 0;
     }
     
     .hero-subtitle {
         color: #94A3B8;
-        font-size: 1rem;
+        font-size: 0.95rem;
         margin: 0;
+    }
+    
+    /* Utterance Card */
+    .utterance-row {
+        background: rgba(15, 23, 42, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
     }
     
     /* Semantic search result card */
@@ -121,20 +153,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 5. Fetch all notes
+# 4. Fetch all notes
 try:
     all_notes = get_all_notes()
 except Exception:
     all_notes = []
 
-# 6. Sidebar Navigation & Info
+# 5. Sidebar Navigation & Info
 with st.sidebar:
     st.markdown("### 🎙️ AI Voice Studio")
-    st.caption("Deepgram Nova-3 • ChromaDB • Action Extractor")
+    st.caption("Deepgram Nova-3 • Diarization • Traceability")
     
     st.divider()
     
-    # Check API Key
+    # Check & Clean API Key
     current_key = os.getenv("DEEPGRAM_API_KEY") or st.session_state.get("custom_dg_key")
     if current_key:
         current_key = str(current_key).strip().strip("'\"")
@@ -150,7 +182,7 @@ with st.sidebar:
     # Live Metrics
     col_m1, col_m2 = st.columns(2)
     with col_m1:
-        st.metric("Total Notes", len(all_notes))
+        st.metric("Saved Notes", len(all_notes))
     with col_m2:
         model_name = os.getenv("DEEPGRAM_MODEL", "nova-3")
         st.metric("Model", model_name.upper())
@@ -165,7 +197,7 @@ with st.sidebar:
         masked_key = f"{current_key[:4]}...{current_key[-4:]}"
         st.success(f"🟢 Deepgram: Ready (`{masked_key}`)", icon="🔑")
         with st.expander("⚙️ Change / Update API Key"):
-            new_k = st.text_input("New Deepgram Key", type="password", placeholder="Paste your key...", key="update_key_input")
+            new_k = st.text_input("New Deepgram Key", type="password", placeholder="Paste key...", key="update_key_input")
             if st.button("Apply New Key", key="btn_apply_key"):
                 if new_k.strip():
                     cleaned_k = new_k.strip().strip("'\"")
@@ -208,55 +240,59 @@ with st.sidebar:
         st.success("🟢 Action Extractor: Ready (Built-in NLP)", icon="⚡")
         
     st.divider()
-    st.markdown("#### 🚀 Flagship Features")
+    st.markdown("#### 🎯 Traceability Features")
     st.markdown("""
-    - ⚡ **Deepgram Nova-3**: Sub-second speech recognition.
-    - 📋 **Action Item Extractor**: Automatically parses tasks & to-dos.
-    - 🧠 **ChromaDB Vector Search**: Semantic retrieval by concept & meaning.
-    - 📥 **One-Click Export**: Save to `.txt` with task checklists.
+    - 👥 **Speaker Diarization**: Detects multiple speakers (`Speaker 1`, `Speaker 2`).
+    - ⏱️ **Timestamp Linking**: Every action item and transcript line links to exact audio seconds.
+    - 🧹 **Zero-Orphan Storage**: Discard leaves zero disk traces; Deleting notes cleans up audio files.
     """)
 
-# 7. Hero Banner
+# 6. Hero Banner
 st.markdown("""
 <div class="hero-container">
-    <div class="badge-pill">⚡ Full-Stack AI Voice Assistant & Action-Item Extractor</div>
+    <div class="badge-pill">⚡ Task 3: Conversation Traceability & Diarization</div>
     <h1 class="hero-title">AI Voice Notes Studio</h1>
-    <p class="hero-subtitle">Convert spoken words into structured notes, automatically extract to-do action items, and query thoughts using semantic vector AI.</p>
+    <p class="hero-subtitle">Every decision, action item, and speaker segment is linked to its exact audio timestamp for one-click verification.</p>
 </div>
 """, unsafe_allow_html=True)
 
-# 8. Main Tabs Layout
-tab_record, tab_search, tab_library = st.tabs([
-    "🎙️ Record & Assistant", 
-    "🔍 AI Semantic Search", 
-    f"📚 Notes & Action Items ({len(all_notes)})"
-])
-
-# Initialize session state keys
+# 7. Initialize session state keys
 if "recorder_key" not in st.session_state:
     st.session_state["recorder_key"] = 0
+if "curr_audio_bytes" not in st.session_state:
+    st.session_state["curr_audio_bytes"] = None
+if "curr_audio_mime" not in st.session_state:
+    st.session_state["curr_audio_mime"] = "audio/wav"
+if "preview_seek_time" not in st.session_state:
+    st.session_state["preview_seek_time"] = 0
 if "transcript" not in st.session_state:
     st.session_state["transcript"] = ""
 if "summary" not in st.session_state:
     st.session_state["summary"] = ""
 if "action_items" not in st.session_state:
     st.session_state["action_items"] = []
+if "utterances" not in st.session_state:
+    st.session_state["utterances"] = []
+
+# 8. Main Tabs Layout
+tab_record, tab_search, tab_library = st.tabs([
+    "🎙️ Record & Traceability Assistant", 
+    "🔍 AI Semantic Search", 
+    f"📚 Notes & Audio Library ({len(all_notes)})"
+])
 
 # ==========================================================
-# TAB 1: RECORD & ASSISTANT
+# TAB 1: RECORD & ASSISTANT (IN-MEMORY AUDIO & TRACEABILITY)
 # ==========================================================
 with tab_record:
     col_rec, col_edit = st.columns([1, 1], gap="large")
     
     # --- Left Column: Audio Capture ---
     with col_rec:
-        st.markdown("### 1. Capture Your Voice")
-        st.write("Speak your thoughts, lecture, or meeting notes.")
+        st.markdown("### 1. Ingest Audio (In-Memory)")
+        st.write("Record via mic or upload. Audio remains in memory until you choose to save.")
         
         mode = st.radio("Input Source", ["🎤 Microphone Recording", "📁 Upload Audio File"], horizontal=True)
-        
-        audio_payload = None
-        audio_mimetype = "audio/wav"
         
         if mode == "🎤 Microphone Recording":
             audio = mic_recorder(
@@ -264,124 +300,199 @@ with tab_record:
                 stop_prompt="⏹️ Stop Recording",
                 key=f"voice_recorder_{st.session_state['recorder_key']}"
             )
-            
             if audio and audio.get("bytes"):
-                audio_payload = audio["bytes"]
-                audio_mimetype = "audio/wav"
-                st.audio(audio_payload, format="audio/wav")
+                if st.session_state["curr_audio_bytes"] != audio["bytes"]:
+                    st.session_state["curr_audio_bytes"] = audio["bytes"]
+                    st.session_state["curr_audio_mime"] = "audio/wav"
+                    st.session_state["preview_seek_time"] = 0
         else:
             uploaded_file = st.file_uploader(
-                "Upload audio file (.wav, .mp3, .m4a, .ogg)",
-                type=["wav", "mp3", "m4a", "ogg", "webm"]
+                "Upload voice note (.wav, .mp3, .m4a, .ogg)",
+                type=["wav", "mp3", "m4a", "ogg", "webm"],
+                key="file_uploader_input"
             )
             if uploaded_file is not None:
-                audio_payload = uploaded_file.read()
-                audio_mimetype = uploaded_file.type or "audio/wav"
-                st.audio(audio_payload, format=audio_mimetype)
+                new_bytes = uploaded_file.read()
+                if st.session_state["curr_audio_bytes"] != new_bytes:
+                    st.session_state["curr_audio_bytes"] = new_bytes
+                    st.session_state["curr_audio_mime"] = uploaded_file.type or "audio/wav"
+                    st.session_state["preview_seek_time"] = 0
         
-        # Audio Action Buttons
-        if audio_payload:
+        # Audio Player with Seek Support (Preview State)
+        if st.session_state["curr_audio_bytes"]:
+            st.markdown("#### 🎧 Audio Preview")
+            seek_val = int(st.session_state.get("preview_seek_time", 0))
+            if seek_val > 0:
+                st.caption(f"Jumped to: **{format_time(seek_val)}**")
+            
+            st.audio(
+                st.session_state["curr_audio_bytes"],
+                format=st.session_state["curr_audio_mime"],
+                start_time=seek_val
+            )
+            
             col_t_btn, col_d_btn = st.columns([2, 1])
             with col_t_btn:
-                if st.button("✨ Transcribe & Extract Actions", type="primary", use_container_width=True):
+                if st.button("✨ Transcribe & Diarize with Deepgram", type="primary", use_container_width=True):
                     active_key = os.getenv("DEEPGRAM_API_KEY") or st.session_state.get("custom_dg_key")
                     if not active_key:
-                        st.error("Please provide your Deepgram API Key in the sidebar first.")
+                        st.error("Please enter a valid Deepgram API Key in the sidebar first.")
                     else:
-                        with st.spinner("Transcribing with Deepgram Nova-3 & extracting action items..."):
+                        with st.spinner("Transcribing with Deepgram Nova-3 (Diarization & Utterances enabled)..."):
                             try:
-                                # Direct service execution
-                                res = transcribe_audio(audio_payload, audio_mimetype)
+                                res = transcribe_audio(st.session_state["curr_audio_bytes"], st.session_state["curr_audio_mime"])
                                 transcript_text = res.get("transcript", "")
                                 dg_summary = res.get("deepgram_summary", "")
+                                utterances = res.get("utterances", [])
 
                                 if not transcript_text:
                                     st.warning("No speech detected in audio. Please try recording again.")
                                 else:
-                                    analysis = analyze_transcript(transcript_text, dg_summary)
+                                    analysis = analyze_transcript(transcript_text, dg_summary, utterances)
                                     st.session_state["transcript"] = transcript_text
                                     st.session_state["summary"] = analysis.get("summary", "")
                                     st.session_state["action_items"] = analysis.get("action_items", [])
-                                    st.toast("Transcription & Action Items Ready!", icon="🎉")
+                                    st.session_state["utterances"] = utterances
+                                    st.session_state["preview_seek_time"] = 0
+                                    st.toast("Diarized Transcription & Linked Tasks Ready!", icon="🎉")
                                     st.rerun()
                             except Exception as e:
                                 st.error(f"Transcription failed: {e}")
             
             with col_d_btn:
+                # Discard leaves ZERO files on disk and ZERO entries in DB
                 if st.button("🗑️ Discard", use_container_width=True):
+                    st.session_state["curr_audio_bytes"] = None
                     st.session_state["transcript"] = ""
                     st.session_state["summary"] = ""
                     st.session_state["action_items"] = []
+                    st.session_state["utterances"] = []
+                    st.session_state["preview_seek_time"] = 0
                     st.session_state["recorder_key"] += 1
-                    st.toast("Recording discarded.", icon="🗑️")
+                    st.toast("Recording discarded. Zero files kept.", icon="🗑️")
                     st.rerun()
 
-    # --- Right Column: Review, Edit & Action Items ---
+    # --- Right Column: Review, Edit & Timestamped Action Items ---
     with col_edit:
-        st.markdown("### 2. AI Summary & Action Items")
+        st.markdown("### 2. Traceability & Action Items")
         
         word_count = len(st.session_state["transcript"].split()) if st.session_state["transcript"] else 0
-        st.caption(f"📊 Stats: **{word_count} words** • **{len(st.session_state['action_items'])} action items detected**")
+        num_spks = len(set([u.get('speaker', 'Speaker 1') for u in st.session_state["utterances"]])) if st.session_state["utterances"] else 1
+        st.caption(f"📊 Stats: **{word_count} words** • **{num_spks} speaker(s)** • **{len(st.session_state['action_items'])} linked action item(s)**")
         
         note_title = st.text_input(
             "Note Title",
-            placeholder="e.g. Sprint Planning, Chemistry Class, Weekly Goals"
+            placeholder="e.g. Client Design Review, Team Standup, Lecture Notes"
         )
         
-        edit_tab_text, edit_tab_ai = st.tabs(["📝 Full Transcript", "⚡ AI Action Items & Summary"])
+        edit_tab_actions, edit_tab_utterances, edit_tab_raw = st.tabs([
+            "⚡ Action Items & Decisions",
+            "🗣️ Timestamped Segments",
+            "📝 Raw Transcript"
+        ])
         
-        with edit_tab_text:
-            edited_text = st.text_area(
-                "Voice Transcript",
-                value=st.session_state["transcript"],
-                height=180,
-                placeholder="Your voice transcription will appear here...",
-                label_visibility="collapsed"
-            )
-            
-            if edited_text.strip() and edited_text != st.session_state["transcript"]:
-                if st.button("🔄 Re-analyze Actions from Edited Text", help="Extract new action items from your edits"):
-                    with st.spinner("Analyzing text..."):
-                        try:
-                            a_data = analyze_transcript(edited_text)
-                            st.session_state["transcript"] = edited_text
-                            st.session_state["summary"] = a_data.get("summary", "")
-                            st.session_state["action_items"] = a_data.get("action_items", [])
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Analysis failed: {e}")
-                            
-        with edit_tab_ai:
+        # Sub-tab: Action Items with Clickable Playback
+        with edit_tab_actions:
             if st.session_state["summary"]:
                 st.markdown("**📌 Executive Summary:**")
                 st.info(st.session_state["summary"])
                 
             if st.session_state["action_items"]:
-                st.markdown("**✅ Action Items & To-Dos:**")
-                for item in st.session_state["action_items"]:
-                    st.checkbox(item, value=False, key=f"action_chk_{hash(item)}")
+                st.markdown("**✅ Linked Action Items & Decisions:**")
+                st.caption("Click any timestamp to play the exact moment from audio:")
+                for a_idx, item in enumerate(st.session_state["action_items"]):
+                    col_btn_time, col_task_text = st.columns([1, 3])
+                    st_val = float(item.get("start_time", 0.0))
+                    spk_val = item.get("speaker", "Speaker 1")
+                    
+                    with col_btn_time:
+                        if st.button(f"▶ {format_time(st_val)} • {spk_val}", key=f"prev_act_seek_{a_idx}"):
+                            st.session_state["preview_seek_time"] = int(st_val)
+                            st.rerun()
+                    with col_task_text:
+                        st.checkbox(item.get("task", ""), value=False, key=f"prev_chk_{a_idx}")
             else:
-                st.write("No specific to-do action items detected yet. Record a note with tasks (e.g. *'Need to finish the report by Friday'*).")
-        
-        if st.button("💾 Save & Vector Index Note", type="primary", use_container_width=True):
-            final_text = edited_text.strip() if edited_text.strip() else st.session_state["transcript"].strip()
+                st.write("No action items detected yet. Transcribe an audio recording above.")
+
+        # Sub-tab: Timestamped Utterances with Clickable Playback
+        with edit_tab_utterances:
+            if st.session_state["utterances"]:
+                st.markdown("**🗣️ Diarized Speaker Segments:**")
+                st.caption("Click any segment to seek audio player to that second:")
+                for u_idx, u in enumerate(st.session_state["utterances"]):
+                    col_u_btn, col_u_txt = st.columns([1, 3])
+                    u_start = float(u.get("start", 0.0))
+                    u_spk = u.get("speaker", "Speaker 1")
+                    with col_u_btn:
+                        if st.button(f"▶ {format_time(u_start)} • {u_spk}", key=f"prev_u_seek_{u_idx}"):
+                            st.session_state["preview_seek_time"] = int(u_start)
+                            st.rerun()
+                    with col_u_txt:
+                        st.markdown(f"**{u_spk}:** {u.get('text', '')}")
+            else:
+                st.write("Diarized conversation timeline will appear here after transcription.")
+
+        # Sub-tab: Raw Transcript Text Area
+        with edit_tab_raw:
+            edited_text = st.text_area(
+                "Voice Transcript",
+                value=st.session_state["transcript"],
+                height=180,
+                placeholder="Full raw transcript...",
+                label_visibility="collapsed"
+            )
+            if edited_text.strip() and edited_text != st.session_state["transcript"]:
+                if st.button("🔄 Re-extract Actions from Edits"):
+                    with st.spinner("Analyzing updated text..."):
+                        a_data = analyze_transcript(edited_text, utterances=st.session_state.get("utterances", []))
+                        st.session_state["transcript"] = edited_text
+                        st.session_state["summary"] = a_data.get("summary", "")
+                        st.session_state["action_items"] = a_data.get("action_items", [])
+                        st.rerun()
+
+        # Save Note with Zero-Orphan Audio Policy
+        if st.button("💾 Save Note & Audio", type="primary", use_container_width=True):
+            final_text = edited_text.strip() if 'edited_text' in locals() and edited_text.strip() else st.session_state["transcript"].strip()
             if not note_title.strip() or not final_text:
-                st.warning("Please provide both a title and some note content.")
+                st.warning("Please provide a note title and transcription content before saving.")
             else:
-                with st.spinner("Saving note and indexing vector embeddings..."):
+                with st.spinner("Saving note, persisting audio, and indexing embeddings..."):
                     try:
                         note_id = str(uuid4())
                         created_at = datetime.now(timezone.utc).isoformat()
-                        
+                        audio_path = ""
+
+                        # Persist audio to data/audio/<uuid>.<ext> ONLY upon Save
+                        if st.session_state["curr_audio_bytes"]:
+                            mime_t = st.session_state.get("curr_audio_mime", "audio/wav")
+                            ext = "wav"
+                            if "mp3" in mime_t:
+                                ext = "mp3"
+                            elif "ogg" in mime_t:
+                                ext = "ogg"
+                            elif "webm" in mime_t:
+                                ext = "webm"
+                            elif "m4a" in mime_t:
+                                ext = "m4a"
+                            
+                            dest_file = AUDIO_DIR / f"{note_id}.{ext}"
+                            with open(dest_file, "wb") as f:
+                                f.write(st.session_state["curr_audio_bytes"])
+                            audio_path = str(dest_file)
+
+                        # Save to SQLite
                         save_note(
                             note_id,
                             note_title.strip(),
                             final_text,
                             created_at,
                             summary=st.session_state["summary"],
-                            action_items=st.session_state["action_items"]
+                            action_items=st.session_state["action_items"],
+                            audio_path=audio_path,
+                            utterances=st.session_state["utterances"]
                         )
-                        
+
+                        # Index in ChromaDB
                         add_note_to_vector_db(
                             note_id,
                             note_title.strip(),
@@ -389,11 +500,14 @@ with tab_record:
                             created_at,
                             summary=st.session_state["summary"]
                         )
-                        
-                        st.toast(f"Saved '{note_title}' with action items!", icon="✅")
+
+                        st.toast(f"Saved '{note_title}' with audio verification!", icon="✅")
+                        st.session_state["curr_audio_bytes"] = None
                         st.session_state["transcript"] = ""
                         st.session_state["summary"] = ""
                         st.session_state["action_items"] = []
+                        st.session_state["utterances"] = []
+                        st.session_state["preview_seek_time"] = 0
                         st.session_state["recorder_key"] += 1
                         time.sleep(0.5)
                         st.rerun()
@@ -411,7 +525,7 @@ with tab_search:
     with col_q:
         search_query = st.text_input(
             "Search Query",
-            placeholder="e.g. What were my tasks for the marketing project? Or: budget deadlines",
+            placeholder="e.g. Who committed to the project deadline? Or: budget tasks",
             label_visibility="collapsed"
         )
     with col_btn:
@@ -445,46 +559,105 @@ with tab_search:
                 st.error(f"Search request failed: {e}")
 
 # ==========================================================
-# TAB 3: NOTES & ACTION ITEMS LIBRARY
+# TAB 3: NOTES & AUDIO LIBRARY (CLICKABLE VERIFICATION)
 # ==========================================================
 with tab_library:
     col_head, col_action = st.columns([4, 1])
     with col_head:
-        st.markdown(f"### 📚 Your Notes & Action Items ({len(all_notes)})")
+        st.markdown(f"### 📚 Saved Notes & Conversation Traceability ({len(all_notes)})")
     with col_action:
         if st.button("🔄 Refresh List", use_container_width=True):
             st.rerun()
             
     if not all_notes:
-        st.info("No notes saved yet! Record your first voice note in the 'Record & Assistant' tab.")
+        st.info("No notes saved yet! Record or ingest audio in the 'Record & Traceability Assistant' tab.")
     else:
         for idx, note in enumerate(all_notes):
             created_str = note.get('created_at', '')[:19].replace('T', ' ')
             words = len(note['transcript'].split())
             items = note.get("action_items", [])
+            utterances = note.get("utterances", [])
             summary = note.get("summary", "")
+            audio_path = note.get("audio_path", "")
             
-            with st.expander(f"📝 {note['title']}  •  {created_str}  ({words} words • {len(items)} tasks)"):
+            with st.expander(f"📝 {note['title']}  •  {created_str}  ({words} words • {len(items)} task(s))"):
+                # Audio Playback from audio_path with interactive seek
+                seek_key = f"saved_seek_{note['id']}"
+                saved_seek = int(st.session_state.get(seek_key, 0))
+                
+                if audio_path and os.path.exists(audio_path):
+                    st.markdown("#### 🎧 Verified Audio Recording")
+                    if saved_seek > 0:
+                        st.caption(f"Playing from: **{format_time(saved_seek)}**")
+                    with open(audio_path, "rb") as af:
+                        audio_data = af.read()
+                    st.audio(audio_data, format="audio/wav", start_time=saved_seek)
+                elif audio_path:
+                    st.caption("ℹ️ Audio file was moved or deleted from disk.")
+                
                 if summary:
                     st.markdown("**📌 Executive Summary:**")
                     st.info(summary)
                     
+                # Action Items with Clickable Timestamp Buttons
                 if items:
-                    st.markdown("**✅ Action Items:**")
+                    st.markdown("**✅ Verified Action Items & Decisions:**")
+                    st.caption("Click any timestamp button to verify against the original audio:")
                     for i_idx, itm in enumerate(items):
-                        st.checkbox(itm, value=False, key=f"saved_chk_{note['id']}_{i_idx}")
+                        col_seek_btn, col_task = st.columns([1, 3])
                         
-                st.markdown("**Transcript:**")
-                st.write(note["transcript"])
-                st.caption(f"Note ID: `{note['id']}` • Created at {created_str} UTC")
+                        task_text = itm.get("task", itm.get("text", "")) if isinstance(itm, dict) else str(itm)
+                        task_spk = itm.get("speaker", "Speaker 1") if isinstance(itm, dict) else "Speaker 1"
+                        task_st = float(itm.get("start_time", 0.0)) if isinstance(itm, dict) else 0.0
+                        
+                        with col_seek_btn:
+                            if audio_path and os.path.exists(audio_path):
+                                if st.button(f"▶ {format_time(task_st)} • {task_spk}", key=f"saved_seek_btn_{note['id']}_{i_idx}"):
+                                    st.session_state[seek_key] = int(task_st)
+                                    st.rerun()
+                            else:
+                                st.markdown(f"`{format_time(task_st)} • {task_spk}`")
+                        with col_task:
+                            st.checkbox(task_text, value=False, key=f"saved_chk_{note['id']}_{i_idx}")
+
+                # Diarized Utterances Timeline
+                if utterances:
+                    st.markdown("**🗣️ Diarized Speaker Segments:**")
+                    with st.expander("Show Timestamped Transcript Timeline"):
+                        for u_idx, u in enumerate(utterances):
+                            col_u_btn, col_u_text = st.columns([1, 3])
+                            u_st = float(u.get("start", 0.0))
+                            u_spk = u.get("speaker", "Speaker 1")
+                            with col_u_btn:
+                                if audio_path and os.path.exists(audio_path):
+                                    if st.button(f"▶ {format_time(u_st)} • {u_spk}", key=f"saved_u_btn_{note['id']}_{u_idx}"):
+                                        st.session_state[seek_key] = int(u_st)
+                                        st.rerun()
+                                else:
+                                    st.markdown(f"`{format_time(u_st)} • {u_spk}`")
+                            with col_u_text:
+                                st.write(f"**{u_spk}:** {u.get('text', '')}")
+                else:
+                    st.markdown("**Transcript:**")
+                    st.write(note["transcript"])
+
+                st.caption(f"Note ID: `{note['id']}` • Created: {created_str} UTC")
                 
-                download_text = f"Title: {note['title']}\nDate: {created_str}\n\nSummary:\n{summary}\n\nAction Items:\n" + \
-                                "\n".join([f"- [ ] {x}" for x in items]) + f"\n\nTranscript:\n{note['transcript']}"
+                # Download payload with tasks, timestamps, and speakers
+                action_text_lines = []
+                for x in items:
+                    if isinstance(x, dict):
+                        action_text_lines.append(f"- [ ] [{format_time(x.get('start_time', 0.0))}] ({x.get('speaker', 'Speaker 1')}): {x.get('task', '')}")
+                    else:
+                        action_text_lines.append(f"- [ ] {x}")
+                
+                download_text = f"Title: {note['title']}\nDate: {created_str}\n\nExecutive Summary:\n{summary}\n\nAction Items & Decisions:\n" + \
+                                "\n".join(action_text_lines) + f"\n\nFull Transcript:\n{note['transcript']}"
                 
                 col_down, col_del = st.columns([1, 1])
                 with col_down:
                     st.download_button(
-                        "📥 Download .TXT (with Tasks)",
+                        "📥 Download .TXT (with Tasks & Timestamps)",
                         data=download_text,
                         file_name=f"{note['title'].replace(' ', '_')}.txt",
                         mime="text/plain",
@@ -492,11 +665,12 @@ with tab_library:
                         use_container_width=True
                     )
                 with col_del:
-                    if st.button("🗑️ Delete Note", key=f"del_note_{note['id']}", type="secondary", use_container_width=True):
+                    # Deletes SQLite row, ChromaDB vector, AND physical audio file from disk
+                    if st.button("🗑️ Delete Note & Audio", key=f"del_note_{note['id']}", type="secondary", use_container_width=True):
                         try:
                             delete_note(note['id'])
                             delete_note_from_vector_db(note['id'])
-                            st.toast(f"Deleted '{note['title']}'", icon="🗑️")
+                            st.toast(f"Deleted '{note['title']}' and removed audio from storage.", icon="🗑️")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to delete note: {e}")

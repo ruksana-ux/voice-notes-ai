@@ -33,6 +33,8 @@ def transcribe_audio(audio_bytes, content_type="audio/wav"):
         "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
         "smart_format": "true",
         "punctuate": "true",
+        "diarize": "true",
+        "utterances": "true",
     }
 
     try:
@@ -68,7 +70,75 @@ def transcribe_audio(audio_bytes, content_type="audio/wav"):
         alternatives[0].get("summary", {}).get("short", "")
     )
 
+    # Parse utterances with 1-indexed speaker labels and exact timestamps
+    raw_utterances = result.get("results", {}).get("utterances", [])
+    parsed_utterances = []
+
+    if raw_utterances:
+        for u in raw_utterances:
+            spk_idx = u.get("speaker", 0)
+            spk_label = f"Speaker {int(spk_idx) + 1}"
+            start_t = round(float(u.get("start", 0.0)), 2)
+            end_t = round(float(u.get("end", 0.0)), 2)
+            text_val = u.get("transcript", "").strip()
+            if text_val:
+                parsed_utterances.append({
+                    "speaker": spk_label,
+                    "start": start_t,
+                    "end": end_t,
+                    "text": text_val
+                })
+
+    # Fallback to words grouping if raw_utterances is missing
+    if not parsed_utterances and alternatives and alternatives[0].get("words"):
+        words = alternatives[0].get("words", [])
+        curr_speaker = None
+        curr_start = 0.0
+        curr_end = 0.0
+        curr_words = []
+
+        for w in words:
+            w_spk = f"Speaker {int(w.get('speaker', 0)) + 1}"
+            w_start = float(w.get("start", 0.0))
+            w_end = float(w.get("end", 0.0))
+            w_punct = w.get("punctuated_word") or w.get("word") or ""
+
+            if curr_speaker is None or w_spk != curr_speaker:
+                if curr_words and curr_speaker is not None:
+                    parsed_utterances.append({
+                        "speaker": curr_speaker,
+                        "start": round(curr_start, 2),
+                        "end": round(curr_end, 2),
+                        "text": " ".join(curr_words).strip()
+                    })
+                curr_speaker = w_spk
+                curr_start = w_start
+                curr_end = w_end
+                curr_words = [w_punct]
+            else:
+                curr_words.append(w_punct)
+                curr_end = w_end
+
+        if curr_words and curr_speaker is not None:
+            parsed_utterances.append({
+                "speaker": curr_speaker,
+                "start": round(curr_start, 2),
+                "end": round(curr_end, 2),
+                "text": " ".join(curr_words).strip()
+            })
+
+    # Absolute fallback: single segment
+    if not parsed_utterances and transcript:
+        duration = float(result.get("metadata", {}).get("duration", 0.0))
+        parsed_utterances = [{
+            "speaker": "Speaker 1",
+            "start": 0.0,
+            "end": round(duration, 2),
+            "text": transcript
+        }]
+
     return {
         "transcript": transcript,
-        "deepgram_summary": summary
+        "deepgram_summary": summary,
+        "utterances": parsed_utterances
     }

@@ -1,4 +1,5 @@
 <div align="center">
+<div align="center">
 
 # 🎙️ Vocalis: AI Voice Assistant & Action-Item Extractor
 
@@ -12,7 +13,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![DOI](https://zenodo.org/badge/1465694084.svg)](https://doi.org/10.5281/zenodo.24442640)
 
-[**🌐 Live Demo**](https://voice-notes-ai.streamlit.app) • [**📖 Architecture**](#-system-architecture) • [**⚡ Features**](#-key-features) • [**🚀 Quickstart**](#-quickstart)
+[**🌐 Live Demo**](https://streamlit.app) • [**📖 Architecture**](#-system-architecture) • [**⚡ Features**](#-key-features) • [**🚀 Quickstart**](#-quickstart)
 
 </div>
 
@@ -30,7 +31,7 @@
  └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Demo GIF / Screenshot**: Record a voice note, view automatically extracted action items, and query thoughts semantically. *(Add your `demo.gif` or screenshot here by placing it in `assets/demo.gif`)*.
+![Vocalis AI Demo](demo.png.png)
 
 ---
 

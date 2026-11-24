@@ -50,5 +50,7 @@ except Exception:
     except Exception:
         AUDIO_DIR = Path(tempfile.gettempdir())
 
-MAX_AUDIO_SIZE = 25 * 1024 * 1024
+MAX_AUDIO_SIZE = 100 * 1024 * 1024  # 100MB audio limit
+MAX_FILE_SIZE = MAX_AUDIO_SIZE
+
 

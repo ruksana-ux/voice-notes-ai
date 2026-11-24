@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from .database import init_db, save_note, get_all_notes, delete_note
 from .deepgram_service import transcribe_audio
 from .vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
-from .ai_service import analyze_transcript
+from .ai_service import analyze_transcript, ask_cross_meeting_memory
 from .config import MAX_AUDIO_SIZE, AUDIO_DIR
 
 app = FastAPI(title="Deepgram AI Voice Assistant", version="3.0")
@@ -65,7 +65,7 @@ async def transcribe(file: UploadFile = File(...)):
     if len(audio_bytes) > MAX_AUDIO_SIZE:
         raise HTTPException(
             status_code=413,
-            detail="Audio file is too large."
+            detail=f"Audio file is too large. Maximum supported limit is {MAX_AUDIO_SIZE // (1024 * 1024)}MB."
         )
 
     try:
@@ -171,7 +171,8 @@ def create_note(note: NoteRequest):
             note.title.strip(),
             note.transcript.strip(),
             created_at,
-            summary=note.summary.strip() if note.summary else ""
+            summary=note.summary.strip() if note.summary else "",
+            utterances=note.utterances or []
         )
 
         return {
@@ -230,3 +231,31 @@ def delete_voice_note(note_id: str):
         "message": "Note and associated audio file deleted successfully",
         "note_id": note_id
     }
+
+
+# 7. Cross-Meeting Conversational Memory RAG Q&A with Clickable Timestamp Citations
+class MemoryAskRequest(BaseModel):
+    question: str
+    top_k: Optional[int] = 6
+
+
+@app.post("/memory/ask")
+@app.post("/api/memory/ask")
+def memory_ask(req: MemoryAskRequest):
+    if not req.question or not req.question.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty."
+        )
+
+    try:
+        return ask_cross_meeting_memory(
+            question=req.question.strip(),
+            top_k=req.top_k or 6
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cross-meeting memory query failed: {str(e)}"
+        )
+

@@ -235,3 +235,192 @@ def analyze_transcript(transcript: str, deepgram_summary: str = None, utterances
         "summary": summary_text,
         "action_items": action_items
     }
+
+
+def format_seconds_to_min_sec(seconds: float) -> str:
+    """Formats float/int seconds to MM:SS."""
+    try:
+        total_s = int(float(seconds))
+        m = total_s // 60
+        s = total_s % 60
+        return f"{m:02d}:{s:02d}"
+    except Exception:
+        return "00:00"
+
+
+def format_memory_context(sources: list) -> str:
+    """Formats retrieved meeting utterance chunks into a structured prompt context."""
+    blocks = []
+    for idx, s in enumerate(sources, 1):
+        st_fmt = format_seconds_to_min_sec(s.get("start_time", 0.0))
+        blocks.append(
+            f"Segment {idx}:\n"
+            f"- Meeting Title: \"{s.get('note_title', 'Meeting')}\"\n"
+            f"- Date: {s.get('created_at', 'Unknown')[:10]}\n"
+            f"- Speaker: {s.get('speaker', 'Speaker 1')}\n"
+            f"- Timestamp: {st_fmt} ({s.get('start_time', 0.0):.1f}s - {s.get('end_time', 0.0):.1f}s)\n"
+            f"- Text: \"{s.get('text', '')}\""
+        )
+    return "\n\n".join(blocks)
+
+
+def rag_with_gemini(question: str, formatted_context: str, api_key: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    prompt = f"""You are an intelligent Cross-Meeting Memory AI Assistant.
+Answer the user's question based STRICTLY and ONLY on the retrieved meeting voice segments below.
+
+Guidelines:
+1. Provide a direct, concise, and professional answer.
+2. Whenever stating a fact, quote, decision, or status, you MUST cite the exact meeting and speaker inline using this exact format:
+   [Meeting Title @ MM:SS • Speaker Name]
+   (e.g., [Project Roadmap @ 00:42 • Speaker 2]).
+3. If the segments do not provide enough context to fully answer, state what is mentioned and clarify that other details were not recorded.
+
+Retrieved Meeting Segments:
+{formatted_context}
+
+User Question:
+{question}
+
+Answer with Inline Citations:"""
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2}
+    }
+    resp = requests.post(url, json=payload, timeout=25)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def rag_with_groq(question: str, formatted_context: str, api_key: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    prompt = f"""You are an intelligent Cross-Meeting Memory AI Assistant.
+Answer the user's question based STRICTLY and ONLY on the retrieved meeting voice segments below.
+
+Guidelines:
+1. Provide a direct, concise, and professional answer.
+2. Whenever stating a fact, quote, decision, or status, you MUST cite the exact meeting and speaker inline using this exact format:
+   [Meeting Title @ MM:SS • Speaker Name]
+   (e.g., [Project Roadmap @ 00:42 • Speaker 2]).
+3. If the segments do not provide enough context, clarify what is present and what is missing.
+
+Retrieved Meeting Segments:
+{formatted_context}
+
+User Question:
+{question}
+
+Answer with Inline Citations:"""
+
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=25)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def rag_with_openai(question: str, formatted_context: str, api_key: str) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    prompt = f"""You are an intelligent Cross-Meeting Memory AI Assistant.
+Answer the user's question based STRICTLY and ONLY on the retrieved meeting voice segments below.
+
+Guidelines:
+1. Provide a direct, concise, and professional answer.
+2. Whenever stating a fact, quote, decision, or status, cite inline as: [Meeting Title @ MM:SS • Speaker Name].
+
+Retrieved Meeting Segments:
+{formatted_context}
+
+User Question:
+{question}"""
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=25)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def rag_extractive_fallback(question: str, sources: list) -> str:
+    """Smart extractive fallback when no external LLM API key is configured."""
+    if not sources:
+        return "No relevant meeting discussions were found in your saved voice notes."
+
+    lines = [f"Based on your recorded meetings:"]
+    for s in sources:
+        st_fmt = format_seconds_to_min_sec(s.get("start_time", 0.0))
+        m_title = s.get("note_title", "Meeting")
+        spk = s.get("speaker", "Speaker 1")
+        text = s.get("text", "").strip()
+        lines.append(f"- **{spk}** stated: *\"{text}\"* [{m_title} @ {st_fmt} • {spk}]")
+
+    return "\n\n".join(lines)
+
+
+def answer_cross_meeting_memory(question: str, sources: list) -> str:
+    """Synthesizes cross-meeting RAG Q&A with inline timestamp citations."""
+    if not sources:
+        return "No relevant meeting discussions were found matching your question."
+
+    formatted_context = format_memory_context(sources)
+
+    # 1. Try Gemini
+    gemini_key = os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY
+    if gemini_key:
+        try:
+            return rag_with_gemini(question, formatted_context, gemini_key)
+        except Exception:
+            pass
+
+    # 2. Try Groq
+    groq_key = os.getenv("GROQ_API_KEY") or GROQ_API_KEY
+    if groq_key:
+        try:
+            return rag_with_groq(question, formatted_context, groq_key)
+        except Exception:
+            pass
+
+    # 3. Try OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY") or OPENAI_API_KEY
+    if openai_key:
+        try:
+            return rag_with_openai(question, formatted_context, openai_key)
+        except Exception:
+            pass
+
+    # 4. Fallback
+    return rag_extractive_fallback(question, sources)
+
+
+def ask_cross_meeting_memory(question: str, top_k: int = 6) -> dict:
+    """
+    Main RAG workflow:
+    1. Retrieves top_k timestamped utterance chunks from ChromaDB.
+    2. Synthesizes an answer with inline citations grounded in audio recordings.
+    """
+    from .vector_store import search_utterances
+    clean_q = question.strip()
+    if not clean_q:
+        return {
+            "answer": "Please provide a question to search across your meetings.",
+            "sources": []
+        }
+
+    sources = search_utterances(clean_q, limit=top_k)
+    answer = answer_cross_meeting_memory(clean_q, sources)
+
+    return {
+        "answer": answer,
+        "sources": sources
+    }
+

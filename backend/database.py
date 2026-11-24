@@ -45,7 +45,7 @@ def save_note(note_id, title, transcript, created_at, summary="", action_items=N
 
     with get_connection() as conn:
         conn.execute("""
-            INSERT INTO notes
+            INSERT OR REPLACE INTO notes
             (id, title, transcript, created_at, summary, action_items, audio_path, utterances_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (note_id, title, transcript, created_at, summary, action_items_str, audio_path, utterances_str))
@@ -71,6 +71,25 @@ def get_all_notes():
                 d["utterances"] = []
             results.append(d)
         return results
+
+
+def get_note_by_id(note_id: str):
+    """Retrieves a single note by its ID, parsing action_items and utterances."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["action_items"] = json.loads(d.get("action_items") or "[]")
+        except Exception:
+            d["action_items"] = []
+        try:
+            d["utterances"] = json.loads(d.get("utterances_json") or "[]")
+        except Exception:
+            d["utterances"] = []
+        return d
+
 
 
 def delete_note(note_id):

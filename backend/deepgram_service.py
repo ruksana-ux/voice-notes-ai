@@ -42,7 +42,8 @@ def transcribe_audio(audio_bytes, content_type="audio/wav"):
             url,
             headers=headers,
             params=params,
-            data=audio_bytes
+            data=audio_bytes,
+            timeout=180.0
         )
         response.raise_for_status()
     except requests.HTTPError as err:

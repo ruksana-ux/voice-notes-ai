@@ -60,19 +60,19 @@ except Exception:
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 try:
-    from backend.database import init_db, save_note, get_all_notes, delete_note
+    from backend.database import init_db, save_note, get_all_notes, delete_note, get_note_by_id
     from backend.deepgram_service import transcribe_audio
     from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
-    from backend.ai_service import analyze_transcript
+    from backend.ai_service import analyze_transcript, ask_cross_meeting_memory
 except (ImportError, ModuleNotFoundError):
     # Retry after explicitly injecting ROOT_DIR
     if str(BASE_DIR) in sys.path:
         sys.path.remove(str(BASE_DIR))
     sys.path.insert(0, str(BASE_DIR))
-    from backend.database import init_db, save_note, get_all_notes, delete_note
+    from backend.database import init_db, save_note, get_all_notes, delete_note, get_note_by_id
     from backend.deepgram_service import transcribe_audio
     from backend.vector_store import add_note_to_vector_db, semantic_search, delete_note_from_vector_db
-    from backend.ai_service import analyze_transcript
+    from backend.ai_service import analyze_transcript, ask_cross_meeting_memory
 
 # Initialize database schema and migrations
 try:
@@ -179,6 +179,16 @@ st.markdown("""
         border-radius: 6px;
         display: inline-block;
     }
+    
+    /* Conversational RAG Answer Card */
+    .rag-answer-card {
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(168, 85, 247, 0.08) 100%);
+        border: 1px solid rgba(99, 102, 241, 0.35);
+        border-radius: 16px;
+        padding: 20px 24px;
+        margin-bottom: 18px;
+        box-shadow: 0 8px 24px -8px rgba(99, 102, 241, 0.25);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -269,19 +279,21 @@ with st.sidebar:
         st.success("🟢 Action Extractor: Ready (Built-in NLP)", icon="⚡")
         
     st.divider()
-    st.markdown("#### 🎯 Traceability Features")
+    st.markdown("#### 🎯 Flagship Features")
     st.markdown("""
+    - 🧠 **Cross-Meeting Memory**: Ask natural questions across all recorded meetings with clickable timestamp citations.
     - 👥 **Speaker Diarization**: Detects multiple speakers (`Speaker 1`, `Speaker 2`).
-    - ⏱️ **Timestamp Linking**: Every action item and transcript line links to exact audio seconds.
+    - ⏱️ **Timestamp Traceability**: Every decision and action item links to exact audio seconds.
+    - 📦 **100MB Audio Limit**: Handles longer 30–60 min recordings with 180s processing timeout.
     - 🧹 **Zero-Orphan Storage**: Discard leaves zero disk traces; Deleting notes cleans up audio files.
     """)
 
 # 6. Hero Banner
 st.markdown("""
 <div class="hero-container">
-    <div class="badge-pill">⚡ Task 3: Conversation Traceability & Diarization</div>
+    <div class="badge-pill">⚡ Cross-Meeting Memory RAG & Conversation Traceability</div>
     <h1 class="hero-title">AI Voice Notes Studio</h1>
-    <p class="hero-subtitle">Every decision, action item, and speaker segment is linked to its exact audio timestamp for one-click verification.</p>
+    <p class="hero-subtitle">Ask questions across meetings with verified timestamp audio citations, speaker diarization, and zero-orphan audio storage.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -306,7 +318,7 @@ if "utterances" not in st.session_state:
 # 8. Main Tabs Layout
 tab_record, tab_search, tab_library = st.tabs([
     "🎙️ Record & Traceability Assistant", 
-    "🔍 AI Semantic Search", 
+    "🔍 AI Cross-Meeting Memory & Search", 
     f"📚 Notes & Audio Library ({len(all_notes)})"
 ])
 
@@ -336,13 +348,16 @@ with tab_record:
                     st.session_state["preview_seek_time"] = 0
         else:
             uploaded_file = st.file_uploader(
-                "Upload voice note (.wav, .mp3, .m4a, .ogg)",
+                "Upload voice note up to 100MB (.wav, .mp3, .m4a, .ogg, .webm)",
                 type=["wav", "mp3", "m4a", "ogg", "webm"],
-                key="file_uploader_input"
+                key="file_uploader_input",
+                help="Supports audio files up to 100MB for long meetings."
             )
             if uploaded_file is not None:
                 new_bytes = uploaded_file.read()
-                if st.session_state["curr_audio_bytes"] != new_bytes:
+                if len(new_bytes) > 100 * 1024 * 1024:
+                    st.error("Audio file exceeds the 100MB limit. Please upload a smaller recording.")
+                elif st.session_state["curr_audio_bytes"] != new_bytes:
                     st.session_state["curr_audio_bytes"] = new_bytes
                     st.session_state["curr_audio_mime"] = uploaded_file.type or "audio/wav"
                     st.session_state["preview_seek_time"] = 0
@@ -521,13 +536,14 @@ with tab_record:
                             utterances=st.session_state["utterances"]
                         )
 
-                        # Index in ChromaDB
+                        # Index in ChromaDB (both full note and utterance chunks for Cross-Meeting RAG)
                         add_note_to_vector_db(
                             note_id,
                             note_title.strip(),
                             final_text,
                             created_at,
-                            summary=st.session_state["summary"]
+                            summary=st.session_state["summary"],
+                            utterances=st.session_state["utterances"]
                         )
 
                         st.toast(f"Saved '{note_title}' with audio verification!", icon="✅")
@@ -544,48 +560,181 @@ with tab_record:
                         st.error(f"Failed to save note: {e}")
 
 # ==========================================================
-# TAB 2: AI SEMANTIC SEARCH
+# TAB 2: AI CROSS-MEETING MEMORY & SEMANTIC SEARCH
 # ==========================================================
 with tab_search:
-    st.markdown("### 🔍 Search by Concept & Meaning")
-    st.markdown("Ask natural questions or search by intent. Powered by ChromaDB vector database and `all-MiniLM-L6-v2`.")
-    
-    col_q, col_btn = st.columns([5, 1])
-    with col_q:
-        search_query = st.text_input(
-            "Search Query",
-            placeholder="e.g. Who committed to the project deadline? Or: budget tasks",
-            label_visibility="collapsed"
-        )
-    with col_btn:
-        search_clicked = st.button("🔎 Search", type="primary", use_container_width=True)
-    
-    if search_query.strip() and (search_clicked or search_query):
-        with st.spinner("Searching vector index..."):
-            try:
-                matches = semantic_search(search_query.strip())
-                
-                if matches:
-                    st.success(f"Found {len(matches)} relevant note(s):")
-                    for m in matches:
-                        sim_pct = max(0, min(100, int((1 - (m["distance"] / 2)) * 100)))
-                        note_summary = m["metadata"].get("summary", "")
-                        
-                        st.markdown(f"""
-                        <div class="search-card">
-                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                                <strong style="font-size:1.15rem; color:#F8FAFC;">📝 {m['metadata']['title']}</strong>
-                                <span class="score-badge">🎯 {sim_pct}% Match</span>
+    st.markdown("### 🔍 AI Cross-Meeting Memory & Search Studio")
+    st.caption("Ask natural-language questions across all recorded discussions, or search notes by concept and meaning.")
+
+    mode_rag, mode_semantic = st.tabs([
+        "🧠 Ask Across Meetings (Conversational RAG Q&A)",
+        "🔎 Semantic Note & Segment Search"
+    ])
+
+    # ----------------------------------------------------------
+    # SUB-TAB A: CROSS-MEETING MEMORY CONVERSATIONAL RAG Q&A
+    # ----------------------------------------------------------
+    with mode_rag:
+        st.markdown("#### 🧠 Intelligent Cross-Meeting Memory")
+        st.write("Ask any question across your past meetings. AI synthesizes a grounded answer with **clickable timestamp citations** to listen to the verified voice clip.")
+
+        # Quick Suggestion Pills
+        st.markdown("**💡 Sample Questions:**")
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            if st.button("👥 Speaker 2 Commitments", key="p_s2", use_container_width=True):
+                st.session_state["rag_input_box"] = "What did Speaker 2 commit or agree to deliver?"
+                st.rerun()
+        with col_s2:
+            if st.button("💰 Budget & Financials", key="p_budg", use_container_width=True):
+                st.session_state["rag_input_box"] = "Summarize all decisions and discussions regarding the budget."
+                st.rerun()
+        with col_s3:
+            if st.button("⏰ Deadlines & Timeline", key="p_dead", use_container_width=True):
+                st.session_state["rag_input_box"] = "What deadlines and delivery dates were agreed upon?"
+                st.rerun()
+
+        if "rag_input_box" not in st.session_state:
+            st.session_state["rag_input_box"] = ""
+
+        col_rq, col_rbtn = st.columns([5, 1])
+        with col_rq:
+            rag_question = st.text_input(
+                "Cross-Meeting Question",
+                value=st.session_state["rag_input_box"],
+                placeholder="e.g. What did Speaker 2 agree to deliver? Or: summarize all decisions about the budget",
+                key="rag_q_input",
+                label_visibility="collapsed"
+            )
+        with col_rbtn:
+            ask_pressed = st.button("✨ Ask AI", type="primary", key="btn_ask_rag", use_container_width=True)
+
+        # Trigger search on button click or input submit
+        if rag_question.strip() and (ask_pressed or rag_question != st.session_state.get("last_asked_rag_q")):
+            st.session_state["last_asked_rag_q"] = rag_question.strip()
+            with st.spinner("Searching timestamped meeting segments & synthesizing answer..."):
+                try:
+                    rag_res = ask_cross_meeting_memory(rag_question.strip(), top_k=6)
+                    st.session_state["curr_rag_answer"] = rag_res.get("answer", "")
+                    st.session_state["curr_rag_sources"] = rag_res.get("sources", [])
+                except Exception as e:
+                    st.error(f"Cross-meeting query failed: {e}")
+
+        # Active Audio Player (Jumped to Citation Timestamp)
+        if st.session_state.get("active_rag_audio") and os.path.exists(st.session_state["active_rag_audio"]):
+            st.markdown(f"##### 🔊 Listening to Citation: `{st.session_state.get('active_rag_label', '')}`")
+            col_aud, col_close = st.columns([5, 1])
+            with col_aud:
+                st.audio(
+                    st.session_state["active_rag_audio"],
+                    start_time=st.session_state.get("active_rag_start", 0)
+                )
+            with col_close:
+                if st.button("✕ Close Audio", key="btn_close_rag_audio", use_container_width=True):
+                    st.session_state["active_rag_audio"] = None
+                    st.rerun()
+
+        # Render Synthesized Answer
+        if st.session_state.get("curr_rag_answer"):
+            st.markdown(f"""
+            <div class="rag-answer-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <span style="font-weight:700; color:#A5B4FC; font-size:1.05rem;">💡 AI-Synthesized Answer</span>
+                    <span class="score-badge">🧠 Grounded in {len(st.session_state.get('curr_rag_sources', []))} Voice Segments</span>
+                </div>
+                <div style="color:#F8FAFC; line-height:1.7; font-size:0.98rem;">
+                    {st.session_state["curr_rag_answer"]}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Render Verified Timestamp Sources
+            sources = st.session_state.get("curr_rag_sources", [])
+            if sources:
+                st.markdown("#### 🎙️ Clickable Audio Citations & Verified Voice Segments")
+                st.caption("Click any timestamp citation to verify and play the exact voice recording segment:")
+
+                for s_idx, src in enumerate(sources):
+                    st_time_val = float(src.get("start_time", 0.0))
+                    spk_name = src.get("speaker", "Speaker 1")
+                    m_title = src.get("note_title", "Meeting Note")
+                    txt_clip = src.get("text", "")
+                    note_id_val = src.get("note_id", "")
+                    
+                    # Fetch note to get physical audio path
+                    note_obj = get_note_by_id(note_id_val)
+                    audio_file = note_obj.get("audio_path", "") if note_obj else ""
+
+                    col_c_btn, col_c_txt = st.columns([1, 2])
+                    with col_c_btn:
+                        btn_txt = f"▶ {format_time(st_time_val)} • {spk_name} — {m_title}"
+                        if audio_file and os.path.exists(audio_file):
+                            if st.button(btn_txt, key=f"rag_btn_{s_idx}", use_container_width=True):
+                                st.session_state["active_rag_audio"] = audio_file
+                                st.session_state["active_rag_start"] = int(st_time_val)
+                                st.session_state["active_rag_label"] = f"{m_title} @ {format_time(st_time_val)} ({spk_name})"
+                                st.session_state[f"play_seek_{note_id_val}"] = int(st_time_val)
+                                st.toast(f"Playing verified clip: {m_title} at {format_time(st_time_val)}", icon="🎧")
+                                st.rerun()
+                        else:
+                            st.markdown(f"`▶ {format_time(st_time_val)} • {spk_name} — {m_title}`")
+                    with col_c_txt:
+                        st.markdown(f"> *\"{txt_clip}\"*")
+
+        elif not all_notes:
+            st.info("No saved notes found yet. Record or upload your first voice note in the 'Record & Traceability Assistant' tab to unlock Cross-Meeting Memory!")
+
+    # ----------------------------------------------------------
+    # SUB-TAB B: SEMANTIC NOTE & SEGMENT SEARCH
+    # ----------------------------------------------------------
+    with mode_semantic:
+        st.markdown("#### 🔎 Semantic Note & Segment Search")
+        st.write("Search meeting notes by concept and meaning. Powered by ChromaDB vector database and `all-MiniLM-L6-v2`.")
+
+        col_q, col_btn = st.columns([5, 1])
+        with col_q:
+            search_query = st.text_input(
+                "Search Query",
+                placeholder="e.g. budget tasks, marketing ideas, hiring developer",
+                key="semantic_query_input",
+                label_visibility="collapsed"
+            )
+        with col_btn:
+            search_clicked = st.button("🔎 Search Notes", type="primary", key="btn_semantic_search", use_container_width=True)
+
+        if search_query.strip() and (search_clicked or search_query):
+            with st.spinner("Searching vector index..."):
+                try:
+                    matches = semantic_search(search_query.strip())
+                    if matches:
+                        st.success(f"Found {len(matches)} relevant note(s):")
+                        for m_idx, m in enumerate(matches):
+                            sim_pct = max(0, min(100, int((1 - (m["distance"] / 2)) * 100)))
+                            note_summary = m["metadata"].get("summary", "")
+                            m_note_id = m.get("id")
+                            
+                            st.markdown(f"""
+                            <div class="search-card">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                    <strong style="font-size:1.15rem; color:#F8FAFC;">📝 {m['metadata']['title']}</strong>
+                                    <span class="score-badge">🎯 {sim_pct}% Match</span>
+                                </div>
+                                {f'<p style="color:#A5B4FC; font-weight:600; margin:0 0 8px 0;">💡 Summary: {note_summary}</p>' if note_summary else ''}
+                                <p style="color:#CBD5E1; line-height:1.6; margin:0 0 10px 0;">{m['transcript']}</p>
+                                <span class="meta-chip">📅 Saved: {m['metadata'].get('created_at', 'N/A')[:19].replace('T', ' ')}</span>
                             </div>
-                            {f'<p style="color:#A5B4FC; font-weight:600; margin:0 0 8px 0;">💡 Summary: {note_summary}</p>' if note_summary else ''}
-                            <p style="color:#CBD5E1; line-height:1.6; margin:0 0 10px 0;">{m['transcript']}</p>
-                            <span class="meta-chip">📅 Saved: {m['metadata'].get('created_at', 'N/A')[:19].replace('T', ' ')}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.info("No matching notes found. Try searching with different concept keywords!")
-            except Exception as e:
-                st.error(f"Search request failed: {e}")
+                            """, unsafe_allow_html=True)
+                            
+                            # Audio player shortcut for matching note
+                            matched_note = get_note_by_id(m_note_id)
+                            m_audio = matched_note.get("audio_path") if matched_note else ""
+                            if m_audio and os.path.exists(m_audio):
+                                with st.expander(f"🎧 Listen to Full Audio: {m['metadata']['title']}"):
+                                    st.audio(m_audio)
+                    else:
+                        st.info("No matching notes found. Try searching with different concept keywords!")
+                except Exception as e:
+                    st.error(f"Search request failed: {e}")
 
 # ==========================================================
 # TAB 3: NOTES & AUDIO LIBRARY (CLICKABLE VERIFICATION)
